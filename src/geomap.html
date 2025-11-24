@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>SNAP Threshold – Avg Cost Per Meal vs Food Insecurity by Race</title>
+  <script src="https://d3js.org/d3.v7.min.js"></script>
+  <style>
+    body {
+      font-family: sans-serif;
+      margin: 20px;
+      background: #ffffff;
+    }
+    svg {
+      font-family: inherit;
+      background: #ffffff;
+    }
+    .tooltip {
+      position: absolute;
+      pointer-events: none;
+      padding: 8px 10px;
+      background: rgba(255, 255, 255, 0.95);
+      border: 1px solid #aaa;
+      border-radius: 4px;
+      font-size: 13px;
+      box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+    }
+  </style>
+</head>
+<body>
+
+<h2>SNAP Threshold – Avg Cost Per Meal vs Food Insecurity by Race (NC Counties, 2022)</h2>
+<p>
+Counties are colored by the difference between the SNAP threshold and the average cost per meal.<br>
+Hover a county to see food insecurity rates by race and overall.
+</p>
+
+<div id="map"></div>
+<div id="tooltip" class="tooltip" style="display:none;"></div>
+
+<script>
+const tooltip = d3.select("#tooltip");
+const width = 900;
+const height = 600;
+
+const svg = d3.select("#map")
+  .append("svg")
+  .attr("width", width)
+  .attr("height", height);
+
+// Helpers
+function parsePercent(str) {
+  if (!str) return NaN;
+  return parseFloat(str.toString().replace('%', '').trim());
+}
+function parseDollar(str) {
+  if (!str) return NaN;
+  return parseFloat(str.toString().replace('$', '').replace(',', '').trim());
+}
+
+Promise.all([
+  d3.json("NCDOT_County_Boundaries.geojson"),
+  d3.csv("county_data.csv")
+]).then(([geojson, data]) => {
+  console.log("GeoJSON features:", geojson.features.length);
+  console.log("CSV rows:", data.length);
+
+  // ---- Prep CSV ----
+  data.forEach(d => {
+    d.FIPS = (d.FIPS || d["\ufeffFIPS"]).toString().padStart(5, "0");
+    d.Year = +d.Year;
+    d.State = d.State;
+
+    d.SNAPThreshold = parsePercent(d["SNAP Threshold"]);        // e.g. "200%" -> 200
+    d.MealCost      = parseDollar(d["Average Cost Per Meal"]);  // e.g. " $4.08 " -> 4.08
+    d.Diff          = d.SNAPThreshold - d.MealCost;             // our choropleth metric
+
+    d.FI_Black   = parsePercent(d["Food Insecurity Rate among Black Persons (all ethnicities)"]);
+    d.FI_Hisp    = parsePercent(d["Food Insecurity Rate among Hispanic Persons (any race)"]);
+    d.FI_WhiteNH = parsePercent(d["Food Insecurity Rate among White, non-Hispanic Persons"]);
+    d.FI_Overall = parsePercent(d["Overall Food Insecurity Rate"]);
+  });
+
+  const latestYear = d3.max(data, d => d.Year);
+  const countyData = data.filter(d => d.State === "NC" && d.Year === latestYear);
+  console.log("NC rows for latest year (" + latestYear + "):", countyData.length);
+
+  const lookup = new Map(countyData.map(d => [d.FIPS, d]));
+
+  const diffValues = countyData
+    .map(d => d.Diff)
+    .filter(v => !isNaN(v));
+
+  console.log("Diff extent:", d3.extent(diffValues));
+
+  const colorScale = d3.scaleSequential()
+    .domain(d3.extent(diffValues))  // [minDiff, maxDiff]
+    .interpolator(d3.interpolateRdBu);
+
+  const projection = d3.geoMercator()
+    .fitSize([width, height], geojson);
+
+  const path = d3.geoPath().projection(projection);
+
+  // ---- Draw counties ----
+  svg.selectAll("path")
+    .data(geojson.features)
+    .enter()
+    .append("path")
+    .attr("d", path)
+    .attr("stroke", "#555")
+    .attr("stroke-width", 0.4)
+    .attr("fill", d => {
+      // GeoJSON FIPS is 1..199; build full 5-digit NC FIPS
+      const f3 = d.properties.FIPS; // e.g. 1 for Alamance
+      const f5 = "37" + String(f3).padStart(3, "0"); // "37001"
+      const row = lookup.get(f5);
+      if (!row || isNaN(row.Diff)) return "#eee";
+      return colorScale(row.Diff);
+    })
+    .on("mousemove", (event, d) => {
+      const f3 = d.properties.FIPS;
+      const f5 = "37" + String(f3).padStart(3, "0");
+      const row = lookup.get(f5);
+
+      if (!row) {
+        tooltip.style("display", "none");
+        return;
+      }
+
+      tooltip
+        .style("display", "block")
+        .style("left", (event.pageX + 10) + "px")
+        .style("top", (event.pageY + 10) + "px")
+        .html(`
+          <strong>${d.properties.CountyName} County, NC</strong><br/>
+          Year: ${row.Year}<br/><br/>
+
+          <strong>SNAP Threshold – Avg Cost/Meal:</strong>
+          ${row.Diff.toFixed(2)} (percentage points – dollars)<br/>
+          SNAP Threshold: ${row.SNAPThreshold.toFixed(0)}%<br/>
+          Avg Cost per Meal: $${row.MealCost.toFixed(2)}<br/><br/>
+
+          <strong>Food Insecurity Rates:</strong><br/>
+          Overall: ${row.FI_Overall.toFixed(1)}%<br/>
+          Black (all ethnicities): ${row.FI_Black.toFixed(1)}%<br/>
+          Hispanic (any race): ${row.FI_Hisp.toFixed(1)}%<br/>
+          White, non-Hispanic: ${row.FI_WhiteNH.toFixed(1)}%
+        `);
+    })
+    .on("mouseout", () => tooltip.style("display", "none"));
+
+  // ---- Legend ----
+  const legendWidth = 220;
+  const legendHeight = 12;
+
+  const legend = svg.append("g")
+    .attr("transform", `translate(20, ${height - 40})`);
+
+  const defs = legend.append("defs");
+  const gradientId = "legendGradient";
+
+  const gradient = defs.append("linearGradient")
+    .attr("id", gradientId)
+    .attr("x1", "0%").attr("x2", "100%")
+    .attr("y1", "0%").attr("y2", "0%");
+
+  const domain = colorScale.domain();
+  const min = domain[0];
+  const max = domain[1];
+
+  d3.range(0, 1.01, 0.1).forEach(t => {
+    gradient.append("stop")
+      .attr("offset", `${t * 100}%`)
+      .attr("stop-color", colorScale(min + t * (max - min)));
+  });
+
+  legend.append("rect")
+    .attr("width", legendWidth)
+    .attr("height", legendHeight)
+    .style("fill", `url(#${gradientId})`);
+
+  const legendScale = d3.scaleLinear()
+    .domain([min, max])
+    .range([0, legendWidth]);
+
+  const legendAxis = d3.axisBottom(legendScale)
+    .ticks(4)
+    .tickFormat(d3.format(".2s"));
+
+  legend.append("g")
+    .attr("transform", `translate(0, ${legendHeight})`)
+    .call(legendAxis);
+
+  legend.append("text")
+    .attr("x", 0)
+    .attr("y", -5)
+    .style("font-size", "12px")
+    .text("SNAP Threshold – Avg Cost per Meal");
+}).catch(err => {
+  console.error("Error loading files:", err);
+});
+</script>
+
+</body>
+</html>

@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Food Insecurity Over Time (2019–2022)</title>
+  <script src="https://d3js.org/d3.v7.min.js"></script>
+  <style>
+    body {
+      font-family: sans-serif;
+      margin: 20px;
+    }
+    h2 {
+      margin-top: 10px;
+    }
+    .chart-container {
+      max-width: 900px;
+    }
+    svg {
+      font-family: inherit;
+    }
+    .axis-label {
+      font-size: 12px;
+      fill: #333;
+    }
+    .tooltip {
+      position: absolute;
+      pointer-events: none;
+      padding: 6px 8px;
+      background: rgba(255, 255, 255, 0.95);
+      border: 1px solid #ccc;
+      border-radius: 4px;
+      font-size: 12px;
+      box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+    }
+    .dropdown {
+      margin-bottom: 10px;
+    }
+  </style>
+</head>
+<body>
+
+  <section class="chart-container">
+    <h2>RQ1: Food Insecurity Rate Over Time (2019–2022)</h2>
+    <p>
+      How has the food insecurity rate changed from 2019 to 2022, and how do these changes compare before,
+      during, and after the COVID-19 pandemic?
+    </p>
+
+    <label for="stateSelect">Select State:</label>
+    <select id="stateSelect" class="dropdown"></select>
+
+    <div id="lineChart"></div>
+  </section>
+
+  <div id="tooltip" class="tooltip" style="display:none;"></div>
+
+  <script>
+    const tooltip = d3.select("#tooltip");
+
+    const margin = { top: 30, right: 40, bottom: 50, left: 60 },
+          width  = 800 - margin.left - margin.right,
+          height = 400 - margin.top - margin.bottom;
+
+    const svg = d3.select("#lineChart")
+      .append("svg")
+      .attr("width", width + margin.left + margin.right)
+      .attr("height", height + margin.top + margin.bottom)
+      .append("g")
+      .attr("transform", `translate(${margin.left},${margin.top})`);
+
+    // Helper to parse "16.1%" -> 0.161
+    function parsePercent(str) {
+      if (!str) return NaN;
+      return parseFloat(str.toString().replace('%', '').trim()) / 100;
+    }
+
+    d3.csv("state_data.csv").then(stateData => {
+      // Inspect in console if you want
+      console.log("Columns:", stateData.columns);
+      console.log("First row:", stateData[0]);
+
+      // Parse data
+      stateData.forEach(d => {
+        d.Year = +d.Year;
+        d.StateCode = d["State"];        // "AL", "AK", etc.
+        d.StateName = d["State Name"];   // "Alabama", etc.
+        d.OverallFoodInsecurityRate = parsePercent(d["Overall Food Insecurity Rate"]);
+      });
+
+      // Get list of states for dropdown
+      const states = Array.from(new Set(stateData.map(d => d.StateCode)))
+        .filter(d => d)
+        .sort();
+
+      console.log("Unique state codes:", states);
+
+      const stateSelect = d3.select("#stateSelect");
+
+      stateSelect.selectAll("option")
+        .data(states)
+        .enter()
+        .append("option")
+        .attr("value", d => d)
+        .text(d => d);
+
+      if (states.length === 0) {
+        console.warn("No states found – check your CSV headers and values.");
+        return;
+      }
+
+      const defaultState = states.includes("NC") ? "NC" : states[0];
+      stateSelect.property("value", defaultState);
+
+      const xScale = d3.scaleLinear().range([0, width]);
+      const yScale = d3.scaleLinear().range([height, 0]);
+
+      const xAxisGroup = svg.append("g")
+        .attr("transform", `translate(0,${height})`);
+
+      const yAxisGroup = svg.append("g");
+
+      svg.append("text")
+        .attr("class", "axis-label")
+        .attr("x", width / 2)
+        .attr("y", height + 40)
+        .attr("text-anchor", "middle")
+        .text("Year");
+
+      svg.append("text")
+        .attr("class", "axis-label")
+        .attr("transform", "rotate(-90)")
+        .attr("x", -height / 2)
+        .attr("y", -45)
+        .attr("text-anchor", "middle")
+        .text("Overall Food Insecurity Rate");
+
+      const lineGenerator = d3.line()
+        .x(d => xScale(d.Year))
+        .y(d => yScale(d.OverallFoodInsecurityRate));
+
+      function updateLineChart(selectedState) {
+        const filtered = stateData.filter(d => d.StateCode === selectedState && !isNaN(d.OverallFoodInsecurityRate));
+
+        if (!filtered.length) {
+          console.warn("No data for state:", selectedState);
+          return;
+        }
+
+        const years = d3.extent(filtered, d => d.Year);
+        xScale.domain(years);
+
+        const yMin = d3.min(filtered, d => d.OverallFoodInsecurityRate);
+        const yMax = d3.max(filtered, d => d.OverallFoodInsecurityRate);
+        yScale.domain([Math.max(0, yMin - 0.01), yMax + 0.01]);
+
+        const xAxis = d3.axisBottom(xScale)
+          .ticks(filtered.length)
+          .tickFormat(d3.format("d"));
+
+        const yAxis = d3.axisLeft(yScale)
+          .tickFormat(d3.format(".0%"));
+
+        xAxisGroup.call(xAxis);
+        yAxisGroup.call(yAxis);
+
+        const linePath = svg.selectAll(".fi-line")
+          .data([filtered], d => selectedState);
+
+        linePath.enter()
+          .append("path")
+          .attr("class", "fi-line")
+          .merge(linePath)
+          .attr("fill", "none")
+          .attr("stroke-width", 2)
+          .attr("stroke", "#3366cc")
+          .attr("d", lineGenerator);
+
+        linePath.exit().remove();
+
+        const circles = svg.selectAll(".fi-point")
+          .data(filtered, d => d.Year);
+
+        circles.enter()
+          .append("circle")
+          .attr("class", "fi-point")
+          .attr("r", 4)
+          .attr("fill", "#3366cc")
+          .merge(circles)
+          .attr("cx", d => xScale(d.Year))
+          .attr("cy", d => yScale(d.OverallFoodInsecurityRate))
+          .on("mousemove", (event, d) => {
+            tooltip.style("display", "block")
+              .style("left", (event.pageX + 10) + "px")
+              .style("top", (event.pageY + 10) + "px")
+              .html(`
+                <strong>${d.StateName} (${d.StateCode})</strong><br/>
+                Year: ${d.Year}<br/>
+                FI Rate: ${(d.OverallFoodInsecurityRate * 100).toFixed(1)}%
+              `);
+          })
+          .on("mouseout", () => {
+            tooltip.style("display", "none");
+          });
+
+        circles.exit().remove();
+      }
+
+      // Initial render
+      updateLineChart(defaultState);
+
+      // Update when dropdown changes
+      stateSelect.on("change", function() {
+        updateLineChart(this.value);
+      });
+    }).catch(err => {
+      console.error("Error loading state_data.csv:", err);
+    });
+  </script>
+</body>
+</html>

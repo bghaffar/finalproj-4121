@@ -1,0 +1,242 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Food Insecurity by Age and Race (Bar Chart)</title>
+  <script src="https://d3js.org/d3.v7.min.js"></script>
+  <style>
+    body {
+      font-family: sans-serif;
+      margin: 20px;
+    }
+    h2 {
+      margin-top: 10px;
+    }
+    .chart-container {
+      max-width: 900px;
+    }
+    svg {
+      font-family: inherit;
+    }
+    .axis-label {
+      font-size: 12px;
+      fill: #333;
+    }
+    .tooltip {
+      position: absolute;
+      pointer-events: none;
+      padding: 6px 8px;
+      background: rgba(255, 255, 255, 0.95);
+      border: 1px solid #ccc;
+      border-radius: 4px;
+      font-size: 12px;
+      box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+    }
+    .dropdown {
+      margin-bottom: 10px;
+      margin-right: 10px;
+    }
+  </style>
+</head>
+<body>
+
+  <section class="chart-container">
+    <h2>Are there state trends in food insecurity by age and race?</h2>
+    <p>
+      Select a state and year to compare food insecurity rates across age and race groups.
+    </p>
+
+    <label for="stateSelect">State:</label>
+    <select id="stateSelect" class="dropdown"></select>
+
+    <label for="yearSelect">Year:</label>
+    <select id="yearSelect" class="dropdown"></select>
+
+    <div id="barChart"></div>
+  </section>
+
+  <div id="tooltip" class="tooltip" style="display:none;"></div>
+
+  <script>
+    const tooltip = d3.select("#tooltip");
+
+    const margin = { top: 30, right: 40, bottom: 80, left: 70 },
+          width  = 800 - margin.left - margin.right,
+          height = 450 - margin.top - margin.bottom;
+
+    const svg = d3.select("#barChart")
+      .append("svg")
+      .attr("width", width + margin.left + margin.right)
+      .attr("height", height + margin.top + margin.bottom)
+      .append("g")
+      .attr("transform", `translate(${margin.left},${margin.top})`);
+
+    const stateSelect = d3.select("#stateSelect");
+    const yearSelect  = d3.select("#yearSelect");
+
+    // Helper: "16.1%" -> 0.161
+    function parsePercent(str) {
+      if (!str) return NaN;
+      return parseFloat(str.toString().replace('%', '').trim()) / 100;
+    }
+
+    d3.csv("state_data.csv").then(data => {
+      // Parse basic fields
+      data.forEach(d => {
+        d.Year = +d.Year;
+        d.StateCode = d["State"];
+        d.StateName = d["State Name"];
+
+        d.FI_Black   = parsePercent(d["Food Insecurity Rate among Black Persons (all ethnicities)"]);
+        d.FI_Hisp    = parsePercent(d["Food Insecurity Rate among Hispanic Persons (any race)"]);
+        d.FI_WhiteNH = parsePercent(d["Food Insecurity Rate among White, non-Hispanic Persons"]);
+        d.FI_Child   = parsePercent(d["Child Food Insecurity Rate"]);
+        d.FI_Senior  = parsePercent(d["Senior Food Insecurity Rate"]);
+        d.FI_Older   = parsePercent(d["Older Adult Food Insecurity Rate"]);
+      });
+
+      // Dropdown options
+      const states = Array.from(new Set(data.map(d => d.StateCode))).sort();
+      const years  = Array.from(new Set(data.map(d => d.Year))).sort((a,b) => a - b);
+
+      stateSelect.selectAll("option")
+        .data(states)
+        .enter()
+        .append("option")
+        .attr("value", d => d)
+        .text(d => d);
+
+      yearSelect.selectAll("option")
+        .data(years)
+        .enter()
+        .append("option")
+        .attr("value", d => d)
+        .text(d => d);
+
+      const defaultState = states.includes("NC") ? "NC" : states[0];
+      const defaultYear  = years[years.length - 1];
+
+      stateSelect.property("value", defaultState);
+      yearSelect.property("value", defaultYear);
+
+      // Categories (order on x-axis)
+      const categories = [
+        { key: "FI_Black",   label: "Black (all ethnicities)" },
+        { key: "FI_Hisp",    label: "Hispanic (any race)" },
+        { key: "FI_WhiteNH", label: "White, non-Hispanic" },
+        { key: "FI_Child",   label: "Children" },
+        { key: "FI_Senior",  label: "Seniors" },
+        { key: "FI_Older",   label: "Older Adults" }
+      ];
+
+      const x = d3.scaleBand()
+        .domain(categories.map(c => c.label))
+        .range([0, width])
+        .padding(0.2);
+
+      const y = d3.scaleLinear()
+        .range([height, 0]);
+
+      const xAxisGroup = svg.append("g")
+        .attr("transform", `translate(0,${height})`);
+
+      const yAxisGroup = svg.append("g");
+
+      svg.append("text")
+        .attr("class", "axis-label")
+        .attr("x", width / 2)
+        .attr("y", height + 60)
+        .attr("text-anchor", "middle")
+        .text("Group (Race / Age)");
+
+      svg.append("text")
+        .attr("class", "axis-label")
+        .attr("transform", "rotate(-90)")
+        .attr("x", -height / 2)
+        .attr("y", -50)
+        .attr("text-anchor", "middle")
+        .text("Food Insecurity Rate");
+
+      function update(stateCode, year) {
+        const row = data.find(d => d.StateCode === stateCode && d.Year === +year);
+        if (!row) {
+          console.warn("No data for", stateCode, year);
+          return;
+        }
+
+        // Build array of {label, value}
+        const values = categories
+          .map(c => ({
+            label: c.label,
+            value: row[c.key]
+          }))
+          .filter(d => !isNaN(d.value));
+
+        const yMax = d3.max(values, d => d.value) || 0;
+        y.domain([0, yMax * 1.1]);
+
+        const xAxis = d3.axisBottom(x);
+        const yAxis = d3.axisLeft(y).tickFormat(d3.format(".0%"));
+
+        xAxisGroup.call(xAxis)
+          .selectAll("text")
+          .attr("transform", "rotate(-25)")
+          .style("text-anchor", "end");
+
+        yAxisGroup.call(yAxis);
+
+        // JOIN
+        const bars = svg.selectAll(".fi-bar")
+          .data(values, d => d.label);
+
+        // ENTER + UPDATE
+        bars.enter()
+          .append("rect")
+          .attr("class", "fi-bar")
+          .attr("x", d => x(d.label))
+          .attr("width", x.bandwidth())
+          .attr("y", height)
+          .attr("height", 0)
+          .attr("fill", "#3366cc")
+          .merge(bars)
+          .on("mousemove", (event, d) => {
+            tooltip.style("display", "block")
+              .style("left", (event.pageX + 10) + "px")
+              .style("top", (event.pageY + 10) + "px")
+              .html(`
+                <strong>${row.StateName} (${row.StateCode})</strong><br/>
+                Year: ${row.Year}<br/>
+                Group: ${d.label}<br/>
+                FI Rate: ${(d.value * 100).toFixed(1)}%
+              `);
+          })
+          .on("mouseout", () => {
+            tooltip.style("display", "none");
+          })
+          .transition()
+          .duration(600)
+          .attr("x", d => x(d.label))
+          .attr("width", x.bandwidth())
+          .attr("y", d => y(d.value))
+          .attr("height", d => height - y(d.value));
+
+        // EXIT
+        bars.exit().remove();
+      }
+
+      // Initial draw
+      update(defaultState, defaultYear);
+
+      stateSelect.on("change", function() {
+        update(this.value, yearSelect.property("value"));
+      });
+
+      yearSelect.on("change", function() {
+        update(stateSelect.property("value"), this.value);
+      });
+    }).catch(err => {
+      console.error("Error loading state_data.csv:", err);
+    });
+  </script>
+</body>
+</html>
