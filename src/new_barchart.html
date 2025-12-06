@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Food Insecurity by Age and Race (Bar Chart)</title>
+  <script src="https://d3js.org/d3.v7.min.js"></script>
+
+  <style>
+    body {
+      font-family: sans-serif;
+      margin: 20px;
+    }
+
+    h2 {
+      margin-top: 10px;
+      font-size: 22px;
+    }
+
+    .chart-container {
+      max-width: 900px;
+    }
+
+    svg {
+      font-family: inherit;
+    }
+
+    .axis-label {
+      font-size: 12px;
+      fill: #333;
+    }
+
+    .tooltip {
+      position: absolute;
+      pointer-events: none;
+      padding: 6px 8px;
+      background: rgba(255, 255, 255, 0.95);
+      border: 1px solid #ccc;
+      border-radius: 4px;
+      font-size: 12px;
+      box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+    }
+
+    .dropdown {
+      margin-bottom: 10px;
+      margin-right: 10px;
+    }
+
+    .grid line {
+      stroke: #e0e0e0;
+      stroke-opacity: 0.8;
+    }
+  </style>
+</head>
+
+<body>
+
+  <section class="chart-container">
+    <h2>Are there state trends in food insecurity by age and race?</h2>
+    <p>Select a state and year to compare food insecurity rates across age and race groups.</p>
+
+    <label for="stateSelect">State:</label>
+    <select id="stateSelect" class="dropdown"></select>
+
+    <label for="yearSelect">Year:</label>
+    <select id="yearSelect" class="dropdown"></select>
+
+    <div id="barChart"></div>
+  </section>
+
+  <div id="tooltip" class="tooltip" style="display:none;"></div>
+
+  <script>
+    const tooltip = d3.select("#tooltip");
+
+    const margin = { top: 30, right: 40, bottom: 90, left: 70 },
+          width  = 800 - margin.left - margin.right,
+          height = 450 - margin.top - margin.bottom;
+
+    const svg = d3.select("#barChart")
+      .append("svg")
+      .attr("width", width + margin.left + margin.right)
+      .attr("height", height + margin.top + margin.bottom)
+      .append("g")
+      .attr("transform", `translate(${margin.left},${margin.top})`);
+
+    const stateSelect = d3.select("#stateSelect");
+    const yearSelect  = d3.select("#yearSelect");
+
+    const colorScale = d3.scaleOrdinal()
+      .range(["#264653", "#2a9d8f", "#8d99ae", "#f4a261", "#2b9348", "#7b2cbf"]);
+
+    // Convert percent string → number
+    function parsePercent(str) {
+      if (!str) return NaN;
+      return parseFloat(str.replace('%','')) / 100;
+    }
+
+    d3.csv("state_data.csv").then(data => {
+
+      data.forEach(d => {
+        d.Year = +d.Year;
+        d.StateCode = d["State"];
+        d.StateName = d["State Name"];
+
+        d.FI_Black = parsePercent(d["Food Insecurity Rate among Black Persons (all ethnicities)"]);
+        d.FI_Hisp = parsePercent(d["Food Insecurity Rate among Hispanic Persons (any race)"]);
+        d.FI_WhiteNH = parsePercent(d["Food Insecurity Rate among White, non-Hispanic Persons"]);
+        d.FI_Child = parsePercent(d["Child Food Insecurity Rate"]);
+        d.FI_Senior = parsePercent(d["Senior Food Insecurity Rate"]);
+        d.FI_Older = parsePercent(d["Older Adult Food Insecurity Rate"]);
+      });
+
+      const states = [...new Set(data.map(d => d.StateCode))].sort();
+      const years = [...new Set(data.map(d => d.Year))].sort();
+
+      stateSelect.selectAll("option")
+        .data(states).enter()
+        .append("option")
+        .attr("value", d => d)
+        .text(d => d);
+
+      yearSelect.selectAll("option")
+        .data(years).enter()
+        .append("option")
+        .attr("value", d => d)
+        .text(d => d);
+
+      const defaultState = "NC";
+      const defaultYear = years[years.length - 1];
+
+      stateSelect.property("value", defaultState);
+      yearSelect.property("value", defaultYear);
+
+      const categories = [
+        { key: "FI_Black", label: "Black (all ethnicities)" },
+        { key: "FI_Hisp", label: "Hispanic (any race)" },
+        { key: "FI_WhiteNH", label: "White, non-Hispanic" },
+        { key: "FI_Child", label: "Children" },
+        { key: "FI_Senior", label: "Seniors" },
+        { key: "FI_Older", label: "Older Adults" }
+      ];
+
+      const x = d3.scaleBand()
+        .domain(categories.map(c => c.label))
+        .range([0, width])
+        .padding(0.25);
+
+      const y = d3.scaleLinear().range([height, 0]);
+
+      const xAxisGroup = svg.append("g")
+        .attr("transform", `translate(0,${height})`);
+
+      const yAxisGroup = svg.append("g");
+
+      // Add gridlines
+      function addGridlines() {
+        svg.append("g")
+          .attr("class", "grid")
+          .call(d3.axisLeft(y).ticks(6)
+            .tickSize(-width)
+            .tickFormat(""));
+      }
+
+      function update(stateCode, year) {
+        const row = data.find(d => d.StateCode === stateCode && d.Year === +year);
+        if (!row) return;
+
+        const values = categories.map(c => ({
+          label: c.label,
+          value: row[c.key]
+        })).filter(d => !isNaN(d.value));
+
+        const yMax = d3.max(values, d => d.value);
+        y.domain([0, yMax * 1.15]);
+
+        // Reset grid
+        svg.selectAll(".grid").remove();
+        addGridlines();
+
+        xAxisGroup.call(
+          d3.axisBottom(x)
+            .tickFormat(d => d)
+        ).selectAll("text")
+          .attr("transform", "rotate(-25)")
+          .style("text-anchor", "end");
+
+        yAxisGroup.call(d3.axisLeft(y).tickFormat(d3.format(".0%")));
+
+        const bars = svg.selectAll(".fi-bar")
+          .data(values, d => d.label);
+
+        bars.enter()
+          .append("rect")
+          .attr("class", "fi-bar")
+          .attr("x", d => x(d.label))
+          .attr("width", x.bandwidth())
+          .attr("y", height)
+          .attr("height", 0)
+          .attr("fill", (d,i) => colorScale(i))
+          .merge(bars)
+          .on("mousemove", (event, d) => {
+            tooltip.style("display", "block")
+              .style("left", event.pageX + 10 + "px")
+              .style("top", event.pageY + 10 + "px")
+              .html(`
+                <strong>${row.StateName} (${row.StateCode})</strong><br>
+                Year: ${row.Year}<br>
+                Group: ${d.label}<br>
+                FI Rate: ${(d.value * 100).toFixed(1)}%
+              `);
+          })
+          .on("mouseout", () => tooltip.style("display","none"))
+          .transition().duration(700)
+          .attr("x", d => x(d.label))
+          .attr("y", d => y(d.value))
+          .attr("height", d => height - y(d.value))
+          .attr("fill", (d,i) => colorScale(i));
+
+        bars.exit().remove();
+
+        // --- ADD VALUE LABELS ---
+        const labels = svg.selectAll(".value-label")
+          .data(values, d => d.label);
+
+        labels.enter()
+          .append("text")
+          .attr("class", "value-label")
+          .merge(labels)
+          .text(d => (d.value * 100).toFixed(1) + "%")
+          .attr("x", d => x(d.label) + x.bandwidth() / 2)
+          .attr("y", d => y(d.value) - 5)
+          .attr("text-anchor", "middle")
+          .style("font-size", "12px")
+          .style("fill", "#333");
+
+        labels.exit().remove();
+      }
+
+      update(defaultState, defaultYear);
+
+      stateSelect.on("change", () =>
+        update(stateSelect.property("value"), yearSelect.property("value"))
+      );
+
+      yearSelect.on("change", () =>
+        update(stateSelect.property("value"), yearSelect.property("value"))
+      );
+    });
+  </script>
+</body>
+</html>

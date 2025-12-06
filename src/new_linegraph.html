@@ -1,0 +1,207 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Food Insecurity Over Time (2019–2022)</title>
+  <script src="https://d3js.org/d3.v7.min.js"></script>
+
+  <style>
+    body {
+      font-family: sans-serif;
+      margin: 20px;
+    }
+    h2 {
+      margin-top: 10px;
+    }
+    .chart-container {
+      max-width: 900px;
+    }
+    .tooltip {
+      position: absolute;
+      pointer-events: none;
+      padding: 6px 10px;
+      background: rgba(255,255,255,0.92);
+      border: 1px solid #ccc;
+      border-radius: 4px;
+      font-size: 13px;
+      box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+    }
+    .dropdown { margin-bottom: 12px; }
+
+    .grid line {
+      stroke: #e0e0e0;
+      stroke-opacity: 0.7;
+    }
+  </style>
+</head>
+
+<body>
+
+  <section class="chart-container">
+    <h2>RQ1: Food Insecurity Rate Over Time (2019–2022)</h2>
+    <p>How has the food insecurity rate changed from 2019–2022, before, during, and after the COVID-19 pandemic?</p>
+
+    <label for="stateSelect">Select State:</label>
+    <select id="stateSelect" class="dropdown"></select>
+
+    <!-- OPTIONAL: Uncomment for comparison -->
+    <!--
+    <label for="stateSelect2">Compare With:</label>
+    <select id="stateSelect2" class="dropdown"></select>
+    -->
+
+    <div id="lineChart"></div>
+  </section>
+
+  <div id="tooltip" class="tooltip" style="display:none;"></div>
+
+  <script>
+    const tooltip = d3.select("#tooltip");
+
+    const margin = { top: 40, right: 40, bottom: 55, left: 65 },
+          width  = 820 - margin.left - margin.right,
+          height = 420 - margin.top - margin.bottom;
+
+    const svg = d3.select("#lineChart")
+      .append("svg")
+      .attr("width", width + margin.left + margin.right)
+      .attr("height", height + margin.top + margin.bottom)
+      .append("g")
+      .attr("transform", `translate(${margin.left},${margin.top})`);
+
+    function parsePercent(str) {
+      if (!str) return NaN;
+      return parseFloat(str.replace('%','').trim()) / 100;
+    }
+
+    d3.csv("state_data.csv").then(stateData => {
+      stateData.forEach(d => {
+        d.Year = +d.Year;
+        d.StateCode = d["State"];
+        d.StateName = d["State Name"];
+        d.Overall = parsePercent(d["Overall Food Insecurity Rate"]);
+      });
+
+      const states = [...new Set(stateData.map(d => d.StateCode))].filter(Boolean).sort();
+      
+      d3.select("#stateSelect")
+        .selectAll("option")
+        .data(states)
+        .enter()
+        .append("option")
+        .attr("value", d => d)
+        .text(d => d);
+
+      const defaultState = states.includes("NC") ? "NC" : states[0];
+      d3.select("#stateSelect").property("value", defaultState);
+
+      
+
+      const xScale = d3.scaleLinear().range([0, width]);
+      const yScale = d3.scaleLinear().range([height, 0]);
+
+      const xAxisGroup = svg.append("g").attr("transform", `translate(0,${height})`);
+      const yAxisGroup = svg.append("g");
+
+      const line = d3.line()
+        .x(d => xScale(d.Year))
+        .y(d => yScale(d.Overall));
+
+      // --- GRIDLINES ---
+      function makeXGridlines() {
+        return d3.axisBottom(xScale).ticks(4);
+      }
+      function makeYGridlines() {
+        return d3.axisLeft(yScale).ticks(8);
+      }
+
+      // Add COVID shading (2020–2021)
+      const covidShade = svg.append("rect")
+        .attr("class", "covid-shade")
+        .attr("fill", "#f0f0f0")
+        .attr("opacity", 0.6);
+
+      function update(stateCode) {
+        const filtered = stateData.filter(d => d.StateCode === stateCode && !isNaN(d.Overall));
+        if (!filtered.length) return;
+
+        xScale.domain(d3.extent(filtered, d => d.Year));
+        const yMin = d3.min(filtered, d => d.Overall);
+        const yMax = d3.max(filtered, d => d.Overall);
+        yScale.domain([Math.max(0, yMin - 0.01), yMax + 0.01]);
+
+        xAxisGroup.transition().duration(600)
+          .call(d3.axisBottom(xScale).tickFormat(d3.format("d")));
+
+        yAxisGroup.transition().duration(600)
+          .call(d3.axisLeft(yScale).tickFormat(d3.format(".0%")));
+
+        // Update COVID shading
+        covidShade
+          .attr("x", xScale(2020))
+          .attr("y", 0)
+          .attr("width", xScale(2021) - xScale(2020))
+          .attr("height", height);
+
+        // Add/Update Line
+        const linePath = svg.selectAll(".line-path")
+          .data([filtered]);
+
+        linePath.enter()
+          .append("path")
+          .attr("class", "line-path")
+          .merge(linePath)
+          .transition()
+          .duration(1000)
+          .attr("fill", "none")
+          .attr("stroke", "#3366cc")
+          .attr("stroke-width", 3)
+          .attr("d", line);
+
+        // Add/Update Points
+        const circles = svg.selectAll(".point").data(filtered);
+
+        circles.enter()
+          .append("circle")
+          .attr("class", "point")
+          .attr("r", 4)
+          .attr("fill", "#3366cc")
+          .merge(circles)
+          .attr("cx", d => xScale(d.Year))
+          .attr("cy", d => yScale(d.Overall))
+          .on("mousemove", (event, d) => {
+            tooltip.style("display", "block")
+              .style("left", (event.pageX + 10) + "px")
+              .style("top", (event.pageY + 10) + "px")
+              .html(`
+                <strong>${d.StateName} (${d.StateCode})</strong><br>
+                Year: ${d.Year}<br>
+                FI Rate: ${(d.Overall * 100).toFixed(1)}%
+              `);
+          })
+          .on("mouseout", () => tooltip.style("display", "none"));
+
+        circles.exit().remove();
+
+        // Add gridlines
+        svg.selectAll(".grid").remove();
+        svg.append("g")
+          .attr("class", "grid")
+          .attr("transform", `translate(0,${height})`)
+          .call(makeXGridlines().tickSize(-height).tickFormat(""));
+
+        svg.append("g")
+          .attr("class", "grid")
+          .call(makeYGridlines().tickSize(-width).tickFormat(""));
+      }
+
+      update(defaultState);
+
+      d3.select("#stateSelect").on("change", function () {
+        update(this.value);
+      });
+    });
+  </script>
+
+</body>
+</html>
