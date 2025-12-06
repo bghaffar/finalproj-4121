@@ -1,0 +1,245 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>NC SNAP vs Meal Cost Gap Choropleth</title>
+  <style>
+    body {
+      margin: 0;
+      padding: 0;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: #f7f7f7;
+    }
+
+    #map-container {
+      max-width: 1000px;
+      margin: 20px auto;
+      background: #ffffff;
+      border-radius: 8px;
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+      padding: 16px 16px 24px;
+    }
+
+    h2 {
+      margin-top: 0;
+      margin-bottom: 4px;
+    }
+
+    p.subtitle {
+      margin-top: 0;
+      margin-bottom: 16px;
+      font-size: 0.9rem;
+      color: #555;
+    }
+
+    svg {
+      width: 100%;
+      height: auto;
+    }
+
+    .county {
+      stroke: #000;
+      stroke-width: 0.6px;
+    }
+  </style>
+</head>
+<body>
+
+<div id="map-container">
+  <h2>North Carolina – SNAP vs Meal Cost Normalized Gap</h2>
+  <p class="subtitle">
+    Darker counties have a larger normalized gap between the SNAP threshold (as a multiple of the poverty line)
+    and the average cost per meal.
+  </p>
+  <svg id="map"></svg>
+</div>
+
+<!-- D3 v7 -->
+<script src="https://d3js.org/d3.v7.min.js"></script>
+<script>
+  // ---- Basic layout (mirror Observable's map_width / map_height idea) ----
+  const baseWidth  = 960;
+  const mapWidth   = 0.9 * baseWidth;
+  const mapHeight  = 0.6 * mapWidth;
+
+  const svg = d3.select("#map")
+    .attr("viewBox", `0 0 ${mapWidth} ${mapHeight}`);
+
+  // ---- File paths (assumes files are in same folder as index.html) ----
+  const geoPathFile = "North_Carolina_State_and_County_Boundary_Polygons.geojson";
+  const csvFile     = "county_data.csv";
+
+  // Helper: normalize "County, State" → bare county name to match GeoJSON `County` property
+  function normalizeCsvCountyName(countyState) {
+    // "Wake County, North Carolina" → "Wake County"
+    let name = (countyState || "").replace(", North Carolina", "").trim();
+    // "Wake County" → "Wake"
+    name = name.replace(/ County$/, "");
+    return name;
+  }
+
+  // ---- Load both files (GeoJSON + CSV) like Observable's FileAttachment ----
+  Promise.all([
+    d3.json(geoPathFile),
+    d3.csv(csvFile)
+  ]).then(([geojson, food_raw]) => {
+
+    // ---- counties = geojson (we already have GeoJSON; no topojson.feature) ----
+    const counties = geojson;
+
+    // ---- food_nc_2022 = food_raw.filter(State === "NC" && Year === "2022") ----
+    const food_nc_2022 = food_raw.filter(d => d.State === "NC" && d.Year === "2022");
+
+    // ---- foodByCounty = d3.group(... by county name) ----
+    const foodByCounty = d3.group(
+      food_nc_2022,
+      d => normalizeCsvCountyName(d["County, State"])
+    );
+
+    // ---- prepareFoodData: attach SNAP, COST, etc. to county properties ----
+    counties.features.forEach(f => {
+      const countyName = f.properties.County;   // e.g., "Alamance"
+      const rows       = foodByCounty.get(countyName);
+
+      if (rows && rows.length) {
+        const row = rows[0];
+
+        // Overall food insecurity rate (optional)
+        const rateStr  = (row["Overall Food Insecurity Rate"] || "").trim();
+        const rate     = +rateStr.replace("%", "");
+        f.properties.FI_RATE = Number.isFinite(rate) ? rate : null;
+
+        const countStr = (row[" # of Food Insecure Persons Overall "] || "").trim();
+        const count    = +countStr.replace(/,/g, "");
+        f.properties.FI_COUNT = Number.isFinite(count) ? count : null;
+
+        // SNAP Threshold (e.g. "200%" or "1.3")
+        let snapStr = (row["SNAP Threshold"] || "").trim();
+        let snapVal = NaN;
+        if (snapStr.endsWith("%")) {
+          snapVal = parseFloat(snapStr.replace("%", "")) / 100;  // "200%" → 2.0
+        } else {
+          snapVal = parseFloat(snapStr);
+        }
+        f.properties.SNAP = Number.isFinite(snapVal) ? snapVal : null; // multiple of poverty line
+
+        // Average Cost Per Meal (e.g. "$4.08")
+        let costStr = (row["Average Cost Per Meal"] || "").trim();
+        costStr = costStr.replace("$", "");
+        const costVal = parseFloat(costStr);
+        f.properties.COST = Number.isFinite(costVal) ? costVal : null;
+
+      } else {
+        f.properties.FI_RATE  = null;
+        f.properties.FI_COUNT = null;
+        f.properties.SNAP     = null;
+        f.properties.COST     = null;
+      }
+    });
+
+    // ---- normalizeSnapCost: compute SNAP_N, COST_N, GAP ----
+    const snapVals = [];
+    const costVals = [];
+
+    counties.features.forEach(f => {
+      const s = f.properties.SNAP;
+      const c = f.properties.COST;
+      if (Number.isFinite(s)) snapVals.push(s);
+      if (Number.isFinite(c)) costVals.push(c);
+    });
+
+    const snapMin = d3.min(snapVals);
+    const snapMax = d3.max(snapVals);
+    const costMin = d3.min(costVals);
+    const costMax = d3.max(costVals);
+
+    counties.features.forEach(f => {
+      const s = f.properties.SNAP;
+      const c = f.properties.COST;
+
+      let sn = null;
+      let cn = null;
+
+      // SNAP normalized: if constant, fall back to 0.5 (same as Observable)
+      if (Number.isFinite(s)) {
+        if (snapMax > snapMin) {
+          sn = (s - snapMin) / (snapMax - snapMin);
+        } else {
+          sn = 0.5;  // all SNAP thresholds identical
+        }
+      }
+
+      // Cost normalized
+      if (Number.isFinite(c) && costMax > costMin) {
+        cn = (c - costMin) / (costMax - costMin);
+      }
+
+      f.properties.SNAP_N = sn;
+      f.properties.COST_N = cn;
+
+      if (Number.isFinite(sn) && Number.isFinite(cn)) {
+        f.properties.GAP = Math.abs(sn - cn);
+      } else {
+        f.properties.GAP = null;
+      }
+    });
+
+    // ---- M = max GAP across counties ----
+    const M = d3.max(counties.features, c => c.properties.GAP || 0) || 1;
+
+    // ---- projection + path (Observable used geoIdentity; here we use geoMercator) ----
+    const projection = d3.geoMercator()
+      .fitSize([mapWidth, mapHeight], counties);
+
+    const geoGenerator = d3.geoPath().projection(projection);
+
+    // ---- map = (draw counties, using GAP for color) ----
+    const countyPaths = svg.append("g")
+      .selectAll("path")
+      .data(counties.features)
+      .enter()
+      .append("path")
+        .attr("class", "county")
+        .attr("d", geoGenerator)
+        .attr("fill", d => {
+          const g = d.properties.GAP;
+          if (g == null || isNaN(g)) return "#eee";
+          // same formula: interpolateBlues(Math.pow(g / M, 0.8))
+          const t = Math.pow(g / M, 0.8);
+          return d3.interpolateBlues(t);
+        });
+
+    // ---- Tooltip text (same content as Observable's attr("title", ...)) ----
+    countyPaths.append("title")
+      .text(d => {
+        const snap = d.properties.SNAP;
+        const cost = d.properties.COST;
+        const gap  = d.properties.GAP;
+
+        const snapText = (!Number.isFinite(snap))
+          ? "N/A"
+          : `${(snap * 100).toFixed(0)}% of poverty line`;
+
+        const costText = (!Number.isFinite(cost))
+          ? "N/A"
+          : `$${cost.toFixed(2)} per meal`;
+
+        const gapText = (!Number.isFinite(gap))
+          ? "N/A"
+          : gap.toFixed(2);
+
+        const name = `${d.properties.County} County`;
+
+        return `${name}
+SNAP threshold: ${snapText}
+Avg cost per meal: ${costText}
+Normalized gap: ${gapText}`;
+      });
+
+  }).catch(err => {
+    console.error("Error loading data:", err);
+  });
+</script>
+
+</body>
+</html>
